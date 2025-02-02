@@ -1,0 +1,240 @@
+% this is the whole code which we used to compare and predict the values
+% --- 1. Load and validate data ---
+try
+    data = readmatrix('C:\Users\Mallikarjuna Rao\OneDrive\Desktop\LM_Channel_5200_mean_stdev.xlsx'); % Adjust path to dataset
+    if isempty(data)
+        error('Empty dataset');
+    end
+catch ME
+    error('Error loading data: %s', ME.message);
+end
+
+% --- 2. Extract features and compute targets ---
+y_delta = data(:, 1);    % Wall-normal distance (y/delta)
+U = data(:, 3);          % Velocity (U)
+dU_dy = data(:, 4);      % Velocity gradient (dU/dy)
+
+% Target 1: Wall Shear Stress (τ_wall = μ * (dU/dy))
+mu = 1.81e-5; % Dynamic viscosity (air at STP)
+wall_shear_stress = mu * dU_dy;
+
+% Target 2: Turbulent Kinetic Energy (TKE = 0.5 * (U^2))
+TKE = 0.5 * U.^2;
+
+% Feature: Use columns relevant to wall-normal distance, velocity, and velocity gradient
+features = [y_delta, U, dU_dy];
+
+% --- 3. Remove outliers ---
+z_threshold = 3; % Z-score threshold for outlier detection
+[features_cleaned, wall_shear_stress_cleaned] = removeOutliers(features, wall_shear_stress, z_threshold);
+[features_cleaned, TKE_cleaned] = removeOutliers(features_cleaned, TKE, z_threshold);
+
+% --- 4. Normalize features and targets ---
+[features_normalized, features_mean, features_std] = normalize(features_cleaned);
+[wall_shear_stress_normalized, wss_mean, wss_std] = normalize(wall_shear_stress_cleaned);
+[TKE_normalized, tke_mean, tke_std] = normalize(TKE_cleaned);
+
+% --- 5. Train-test split ---
+rng(42); % Reproducibility
+cv = cvpartition(size(features_normalized, 1), 'HoldOut', 0.3);
+
+X_train = features_normalized(training(cv), :);
+X_test = features_normalized(test(cv), :);
+y_train_wss = wall_shear_stress_normalized(training(cv));
+y_test_wss = wall_shear_stress_normalized(test(cv));
+y_train_tke = TKE_normalized(training(cv));
+y_test_tke = TKE_normalized(test(cv));
+
+% --- 6. Train SVM Models ---
+fprintf('Training SVM models...\n');
+SVMModel_wss = fitrsvm(X_train, y_train_wss, 'KernelFunction', 'rbf', 'OptimizeHyperparameters', 'auto');
+SVMModel_tke = fitrsvm(X_train, y_train_tke, 'KernelFunction', 'rbf', 'OptimizeHyperparameters', 'auto');
+
+% --- 7. Predict WSS and TKE ---
+y_pred_wss = predict(SVMModel_wss, X_test);
+y_pred_tke = predict(SVMModel_tke, X_test);
+
+% Denormalize predictions
+y_pred_wss_denorm = y_pred_wss * wss_std + wss_mean;
+y_pred_tke_denorm = y_pred_tke * tke_std + tke_mean;
+
+% Denormalize test values
+y_test_wss_denorm = y_test_wss * wss_std + wss_mean;
+y_test_tke_denorm = y_test_tke * tke_std + tke_mean;
+
+% --- 8. Error Metrics and Physical Consistency Validation ---
+fprintf('Validating SVM predictions...\n');
+
+rmse_wss = sqrt(mean((y_pred_wss_denorm - y_test_wss_denorm).^2)); 
+r2_wss = 1 - sum((y_pred_wss_denorm - y_test_wss_denorm).^2) / sum((y_test_wss_denorm - mean(y_test_wss_denorm)).^2); % R^2
+
+rmse_tke = sqrt(mean((y_pred_tke_denorm - y_test_tke_denorm).^2)); % RMSE
+r2_tke = 1 - sum((y_pred_tke_denorm - y_test_tke_denorm).^2) / sum((y_test_tke_denorm - mean(y_test_tke_denorm)).^2); % R^2
+
+% Print Error Metrics
+fprintf('Error Metrics for Wall Shear Stress:\n');
+fprintf('RMSE (WSS): %.4f\n', rmse_wss);
+fprintf('R^2 (WSS): %.4f\n', r2_wss);
+
+fprintf('\nError Metrics for Turbulent Kinetic Energy:\n');
+fprintf('RMSE (TKE): %.4f\n', rmse_tke);
+fprintf('R^2 (TKE): %.4f\n', r2_tke);
+
+% --- 9. Visualization ---
+% Create figure with multiple subplots
+figure('Position', [100, 100, 1200, 600]);
+
+% Wall Shear Stress Prediction Plot
+subplot(1, 2, 1);
+scatter(y_test_wss_denorm, y_pred_wss_denorm, 'filled');
+hold on;
+plot([min(y_test_wss_denorm), max(y_test_wss_denorm)], [min(y_test_wss_denorm), max(y_test_wss_denorm)], 'r--', 'LineWidth', 2);
+title('Wall Shear Stress: Actual vs Predicted');
+xlabel('Actual Wall Shear Stress');
+ylabel('Predicted Wall Shear Stress');
+legend('Predictions', 'Ideal Prediction Line');
+
+% Turbulent Kinetic Energy Prediction Plot
+subplot(1, 2, 2);
+scatter(y_test_tke_denorm, y_pred_tke_denorm, 'filled');
+hold on;
+plot([min(y_test_tke_denorm), max(y_test_tke_denorm)], [min(y_test_tke_denorm), max(y_test_tke_denorm)], 'r--', 'LineWidth', 2);
+title('Turbulent Kinetic Energy: Actual vs Predicted');
+xlabel('Actual TKE');
+ylabel('Predicted TKE');
+legend('Predictions', 'Ideal Prediction Line');
+
+% Adjust layout and save figure
+sgtitle('SVM Regression Performance');
+print('prediction_performance.png', '-dpng', '-r300');
+
+% --- 10. Save Results to CSV ---
+results_table = table(... 
+    y_test_wss_denorm, y_pred_wss_denorm, ...
+    y_test_tke_denorm, y_pred_tke_denorm, ...
+    'VariableNames', {'Actual_WSS', 'Predicted_WSS', 'Actual_TKE', 'Predicted_TKE'});
+
+writetable(results_table, 'prediction_results.csv');
+fprintf('Results saved to prediction_results.csv\n');
+
+% --- Additional Functions ---
+
+% Function to remove outliers based on Z-score threshold
+function [cleaned_features, cleaned_targets] = removeOutliers(features, targets, threshold)
+    % Calculate Z-scores for features
+    Z_scores = zscore(features);
+    
+    % Identify rows where all feature Z-scores are within the threshold
+    outlier_mask = all(abs(Z_scores) < threshold, 2);
+    
+    % Filter out rows marked as outliers
+    cleaned_features = features(outlier_mask, :);
+    cleaned_targets = targets(outlier_mask, :);
+end
+
+
+
+
+
+
+% Load Dataset
+data = readtable('C:\Users\Mallikarjuna Rao\OneDrive\Desktop\LM_Channel_5200_mean_prof.csv');
+
+% Clean and Check Column Names
+data.Properties.VariableNames = matlab.lang.makeValidName(data.Properties.VariableNames);
+disp('Column Names After Cleaning:');
+disp(data.Properties.VariableNames);
+
+% Extract Features 
+y_delta = data.y_delta; 
+y_plus = data.y__; 
+U = data.U; 
+dUdy = data.dU_dy; 
+W = data.W; 
+P = data.P; 
+
+% Constants for computing targets
+mu = 1.81e-5; % Dynamic viscosity (air at STP)
+
+% Compute Targets
+Wall_Shear_Stress = mu * dUdy; % Wall Shear Stress
+TKE = 0.5 * U.^2; % Turbulent Kinetic Energy (TKE)
+
+% Prepare Features and Targets
+X = [y_delta, y_plus, U, dUdy, W, P]; 
+y_shear = Wall_Shear_Stress; 
+y_tke = TKE; 
+
+% Normalization
+[X_normalized, mu_X, sigma_X] = zscore(X);
+[y_shear_normalized, mu_shear, sigma_shear] = zscore(y_shear);
+[y_tke_normalized, mu_tke, sigma_tke] = zscore(y_tke);
+
+% Split Data into Training and Testing Sets
+cv = cvpartition(size(X, 1), 'HoldOut', 0.2);
+idxTrain = training(cv);
+idxTest = test(cv);
+
+X_train = X_normalized(idxTrain, :);
+X_test = X_normalized(idxTest, :);
+y_train_shear = y_shear_normalized(idxTrain);
+y_test_shear = y_shear_normalized(idxTest);
+y_train_tke = y_tke_normalized(idxTrain);
+y_test_tke = y_tke_normalized(idxTest);
+
+% Train Random Forest for Wall Shear Stress
+model_shear = TreeBagger(100, X_train, y_train_shear, 'Method', 'regression');
+y_pred_shear = predict(model_shear, X_test);
+
+% Train Random Forest for TKE
+model_tke = TreeBagger(100, X_train, y_train_tke, 'Method', 'regression');
+y_pred_tke = predict(model_tke, X_test);
+
+% Ensure numeric conversion
+if iscell(y_pred_shear)
+    y_pred_shear = cellfun(@str2double, y_pred_shear);
+end
+if iscell(y_pred_tke)
+    y_pred_tke = cellfun(@str2double, y_pred_tke);
+end
+
+% Denormalize Predictions
+y_pred_shear_denorm = y_pred_shear .* sigma_shear + mu_shear;
+y_pred_tke_denorm = y_pred_tke .* sigma_tke + mu_tke;
+y_test_shear_denorm = y_test_shear .* sigma_shear + mu_shear;
+y_test_tke_denorm = y_test_tke .* sigma_tke + mu_tke;
+
+% Prepare Results Table
+results_table = table(...
+    X(idxTest, 1), X(idxTest, 2), X(idxTest, 3), X(idxTest, 4), X(idxTest, 5), X(idxTest, 6), ... % Test features
+    y_test_shear_denorm, ... % Actual Wall Shear Stress (denormalized)
+    y_pred_shear_denorm, ... % Predicted Wall Shear Stress
+    y_test_tke_denorm, ... % Actual TKE (denormalized)
+    y_pred_tke_denorm, ... % Predicted TKE
+    'VariableNames', { ...
+    'y_delta', 'y_plus', 'U', 'dUdy', 'W', 'P', ...
+    'Actual_WSS', 'Predicted_WSS', ...
+    'Actual_TKE', 'Predicted_TKE' ...
+    });
+
+% Save Results
+csv_file_name = fullfile(pwd, 'Predicted_vs_Actual_RF.csv');
+writetable(results_table, csv_file_name);
+fprintf('Results saved to %s\n', csv_file_name);
+
+% Performance Evaluation
+% Mean Squared Error (MSE)
+mse_shear = mean((y_test_shear_denorm - y_pred_shear_denorm).^2);
+mse_tke = mean((y_test_tke_denorm - y_pred_tke_denorm).^2);
+
+% Root Mean Squared Error (RMSE)
+rmse_shear = sqrt(mse_shear);
+rmse_tke = sqrt(mse_tke);
+
+% R-squared
+r2_shear = 1 - (sum((y_test_shear_denorm - y_pred_shear_denorm).^2) / sum((y_test_shear_denorm - mean(y_test_shear_denorm)).^2));
+r2_tke = 1 - (sum((y_test_tke_denorm - y_pred_tke_denorm).^2) / sum((y_test_tke_denorm - mean(y_test_tke_denorm)).^2));
+
+% Display Performance Metrics
+fprintf('Wall Shear Stress - RMSE: %f, R-squared: %f\n', rmse_shear, r2_shear);
+fprintf('Turbulent Kinetic Energy - RMSE: %f, R-squared: %f\n', rmse_tke, r2_tke);
