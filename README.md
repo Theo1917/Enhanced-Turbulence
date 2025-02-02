@@ -1,2 +1,3 @@
 # Enhanced-Turbulence
 Developed a machine learning-driven approach to improve turbulence modeling in Computational Fluid Dynamics (CFD). Integrated Support Vector Machines (SVM) with Reynolds-Averaged Navier-Stokes (RANS) simulations to enhance predictive accuracy.
+Leveraged high-fidelity datasets and Partial Differential Equations (PDEs) to refine traditional turbulence closure models. Focused on optimizing computational efficiency while maintaining physical consistency. This project bridges data-driven techniques with classical CFD methods for more precise turbulence predictions.This modal calculates the turbulent  kinetic energy and comparison between high-fidelity simulation data and experimental results.
